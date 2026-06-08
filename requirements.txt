@@ -1,0 +1,19 @@
+# CodeRAG Assistant — requirements
+# pip install -r requirements.txt
+
+# ── LangChain ─────────────────────────────────────────────────────────────────
+langchain
+langchain-ollama
+langchain-chroma
+langchain-community
+langchain-text-splitters
+
+# ── Vector DB ─────────────────────────────────────────────────────────────────
+chromadb
+
+# ── UI ────────────────────────────────────────────────────────────────────────
+streamlit
+
+# ── Data ──────────────────────────────────────────────────────────────────────
+pandas
+openpyxl
