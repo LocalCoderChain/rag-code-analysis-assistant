@@ -8,7 +8,7 @@ Generates:
   - Per-file summaries
   - Full project README
 
-All generation is RAG-grounded: it reads chunks from ChromaDB
+All generation is RAG-grounded: it reads chunks from the local store
 rather than hallucinating structure.
 """
 
@@ -116,7 +116,7 @@ Code:
 {code}
 
 Be specific. Reference line numbers or function names where possible.
-Use markdown formatting with severity labels: 🔴 Critical, 🟡 Warning, 🟢 Suggestion
+Use markdown formatting with severity labels: [Critical], [Warning], [Suggestion]
 """
 
 IMPROVEMENT_TEMPLATE = """

@@ -1,14 +1,14 @@
 @echo off
 :: ============================================================
-::  CodeRAG Assistant — Windows Launcher
+::  DevOne — Windows Launcher
 ::  Double-click this file to start the app.
 :: ============================================================
 
-title CodeRAG — AI Code Assistant
+title DevOne — AI Code Assistant
 
 echo.
 echo  ============================================================
-echo   CodeRAG  ^|  Local AI Code Analysis ^& Documentation
+echo   DevOne  ^|  Local AI Code Analysis ^& Documentation
 echo  ============================================================
 echo.
 
@@ -59,14 +59,13 @@ if errorlevel 1 (
     echo            ollama pull mxbai-embed-large
 )
 
-:: ── Step 6: Create data directories ──────────────────────────────────────────
-if not exist "data\chroma_db"  mkdir data\chroma_db
-if not exist "data\uploads"    mkdir data\uploads
+:: ── Step 6: Create data directory ────────────────────────────────────────────
+if not exist "data"    mkdir data
 
 :: ── Step 7: Launch ────────────────────────────────────────────────────────────
 echo.
 echo  ============================================================
-echo   Launching CodeRAG in your browser...
+echo   Launching DevOne in your browser...
 echo   URL: http://localhost:8501
 echo.
 echo   Keep this window open while using the app.
