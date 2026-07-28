@@ -7,8 +7,10 @@ venv/
 myvenv/
 .env
 
-# ChromaDB
+# Local data stores (generated, not source)
 data/chroma_db/
+data/devone.db
+data/repos/
 
 # Streamlit
 .streamlit/

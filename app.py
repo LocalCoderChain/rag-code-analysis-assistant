@@ -155,7 +155,7 @@ with st.sidebar:
 
     new_embed = st.selectbox(
         "Embedding model",
-        ["mxbai-embed-large", "nomic-embed-text", "all-minilm"],
+        ["mxbai-embed-large"],  # fixed: sqlite-vec's table dimension is locked in at creation
     )
     if new_embed != st.session_state.embed_model:
         st.session_state.embed_model = new_embed
