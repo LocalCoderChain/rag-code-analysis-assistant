@@ -17,7 +17,10 @@ Run:
     streamlit run app.py
 """
 
+import os
+
 import streamlit as st
+from dotenv import load_dotenv
 from langchain_ollama.llms import OllamaLLM
 from langchain_core.prompts import ChatPromptTemplate
 
@@ -29,6 +32,11 @@ from vector import (
     delete_collection,
 )
 from src.doc_generator import CodeDocGenerator, build_codebase_summary
+from repo_manager import ingest_repo, list_repos, check_remote_status
+
+load_dotenv()
+
+QUICK_TEST_COLLECTION = "quick-test"
 
 
 def get_available_models() -> list[str]:
@@ -94,7 +102,7 @@ st.markdown("""
 # ── Session state defaults ─────────────────────────────────────────────────────
 for key, default in {
     "messages":     [],
-    "collection":   "code_kb",
+    "collection":   QUICK_TEST_COLLECTION,
     "model":        "llama3.2",
     "embed_model":  "mxbai-embed-large",
     "top_k":        6,
@@ -167,27 +175,79 @@ with st.sidebar:
 
     st.divider()
 
-    # ── Collection ─────────────────────────────────────────────────────────────
-    st.markdown("### Project Collection")
-    existing = list_collections()
-    if existing:
-        st.caption("Existing: " + ", ".join(f"`{c}`" for c in existing))
+    # ── GitHub repo ────────────────────────────────────────────────────────────
+    st.markdown("### Connect GitHub Repo")
+    repo_url = st.text_input("Repo URL", placeholder="https://github.com/owner/repo")
 
-    col_input = st.text_input("Collection name", value=st.session_state.collection)
-    if col_input and col_input != st.session_state.collection:
-        st.session_state.collection = col_input
-        load_retriever.clear()
+    if st.button("Connect / Sync", use_container_width=True) and repo_url.strip():
+        token = os.getenv("GITHUB_PAT")
+        if not token:
+            st.error("GITHUB_PAT not found — check your .env file.")
+        else:
+            progress = st.empty()
 
-    if st.button("Delete collection", use_container_width=True):
+            def _progress(done, total, path):
+                progress.markdown(f"_Ingesting {done}/{total}: {path}…_")
+
+            try:
+                with st.spinner("Cloning and indexing repository…"):
+                    result = ingest_repo(repo_url.strip(), token,
+                                         st.session_state.embed_model,
+                                         progress_callback=_progress)
+                progress.empty()
+                st.session_state.collection = result["collection"]
+                load_retriever.clear()
+                st.success(
+                    f"**{result['collection']}** connected — "
+                    f"{result['files_ingested']} files, {result['total_chunks']} chunks "
+                    f"(commit `{result['commit_sha'][:7]}`)"
+                )
+            except Exception as e:
+                progress.empty()
+                st.error(f"Failed to connect repo: {e}")
+
+    st.divider()
+
+    # ── Active project ─────────────────────────────────────────────────────────
+    st.markdown("### Active Project")
+    tracked_repos = list_repos()
+    repo_names    = [r["name"] for r in tracked_repos]
+    ad_hoc        = [c for c in list_collections() if c not in repo_names]
+    all_projects  = repo_names + ad_hoc
+
+    if all_projects:
+        current_index = (all_projects.index(st.session_state.collection)
+                         if st.session_state.collection in all_projects else 0)
+        selected = st.selectbox("Working on", all_projects, index=current_index)
+        if selected != st.session_state.collection:
+            st.session_state.collection = selected
+            load_retriever.clear()
+
+        if st.session_state.collection in repo_names and st.button(
+            "Check for updates", use_container_width=True
+        ):
+            token = os.getenv("GITHUB_PAT")
+            repo_info = next(r for r in tracked_repos if r["name"] == st.session_state.collection)
+            status = check_remote_status(repo_info["url"], token)
+            if status["status"] == "up_to_date":
+                st.info("Up to date.")
+            elif status["status"] == "behind":
+                st.warning("New commits available — reconnect above to sync.")
+            else:
+                st.warning("Could not check — repo not found locally.")
+    else:
+        st.caption("No projects yet — connect a repo above or upload a file below.")
+
+    if st.session_state.collection and st.button("Delete active project", use_container_width=True):
         delete_collection(st.session_state.collection)
         st.session_state.ingested_files = []
         load_retriever.clear()
-        st.success("Collection deleted.")
+        st.success("Deleted.")
 
     st.divider()
 
     # ── File upload ────────────────────────────────────────────────────────────
-    st.markdown("### Upload Source Code")
+    st.markdown("### Upload Source Code (quick test)")
     st.caption("Supported: `.py` `.java` `.js` `.cpp` `.c`")
 
     uploaded_files = st.file_uploader(
@@ -204,7 +264,7 @@ with st.sidebar:
                 summary = ingest_code_file(
                     filename=f.name,
                     source_code=source_code,
-                    collection=st.session_state.collection,
+                    collection=QUICK_TEST_COLLECTION,
                     embed_model=st.session_state.embed_model,
                 )
             if f.name not in st.session_state.ingested_files:
@@ -215,6 +275,7 @@ with st.sidebar:
                 f"{summary['classes']} classes, "
                 f"{summary['total_chunks']} chunks"
             )
+        st.session_state.collection = QUICK_TEST_COLLECTION
         load_retriever.clear()
 
     # Show ingested files
@@ -368,6 +429,8 @@ with tab_chat:
                             "imports":  "tag-imports",
                         }.get(ctype, "tag-code")
                         label = f"{ctype}: {name}" if name else ctype
+                        if meta.get("sub_chunk") is not None:
+                            label += f" (part {meta['sub_chunk'] + 1})"
                         sources_md += (
                             f"<div class='chunk-card'>"
                             f"<span class='chunk-tag {tag_class}'>{label}</span> "

@@ -138,17 +138,18 @@ def search(query: str,
     results = []
     for (rowid,) in candidates:
         row = db.execute(
-            "SELECT text, source, chunk_type, name, language, line_start "
+            "SELECT text, source, chunk_type, name, language, line_start, sub_chunk "
             "FROM chunks WHERE id = ? AND collection = ?",
             (rowid, collection),
         ).fetchone()
         if row:
-            text, source, chunk_type, name, language, line_start = row
+            text, source, chunk_type, name, language, line_start, sub_chunk = row
             results.append(Document(
                 page_content=text,
                 metadata={
                     "source": source, "chunk_type": chunk_type,
                     "name": name, "language": language, "line_start": line_start,
+                    "sub_chunk": sub_chunk,
                 },
             ))
         if len(results) >= top_k:
@@ -265,13 +266,13 @@ def get_all_chunks(collection: str,
     db = get_connection()
     if filename:
         rows = db.execute(
-            "SELECT text, source, chunk_type, name, language, line_start "
+            "SELECT text, source, chunk_type, name, language, line_start, sub_chunk "
             "FROM chunks WHERE collection = ? AND source = ?",
             (collection, filename),
         ).fetchall()
     else:
         rows = db.execute(
-            "SELECT text, source, chunk_type, name, language, line_start "
+            "SELECT text, source, chunk_type, name, language, line_start, sub_chunk "
             "FROM chunks WHERE collection = ?",
             (collection,),
         ).fetchall()
@@ -283,7 +284,8 @@ def get_all_chunks(collection: str,
             metadata={
                 "source": source, "chunk_type": chunk_type,
                 "name": name, "language": language, "line_start": line_start,
+                "sub_chunk": sub_chunk,
             },
         )
-        for text, source, chunk_type, name, language, line_start in rows
+        for text, source, chunk_type, name, language, line_start, sub_chunk in rows
     ]
