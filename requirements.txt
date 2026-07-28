@@ -4,12 +4,11 @@
 # ── LangChain ─────────────────────────────────────────────────────────────────
 langchain
 langchain-ollama
-langchain-chroma
 langchain-community
 langchain-text-splitters
 
 # ── Vector DB ─────────────────────────────────────────────────────────────────
-chromadb
+sqlite-vec
 
 # ── UI ────────────────────────────────────────────────────────────────────────
 streamlit
