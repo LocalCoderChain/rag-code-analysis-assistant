@@ -1,6 +1,6 @@
-# CodeRAG — Local AI Code Assistant
+# DevOne — Local AI Code Assistant
 
-A fully local Retrieval-Augmented Generation (RAG) system for understanding, searching, and explaining source code repositories. CodeRAG allows developers to query large codebases using natural language while keeping all source code and embeddings on their own machine. No cloud APIs are required and no code leaves the local environment.
+A fully local Retrieval-Augmented Generation (RAG) system for understanding, searching, and explaining source code repositories. DevOne allows developers to query large codebases using natural language while keeping all source code and embeddings on their own machine. No cloud APIs are required and no code leaves the local environment.
 
 ---
 
@@ -11,7 +11,7 @@ A fully local Retrieval-Augmented Generation (RAG) system for understanding, sea
 * Supports Python, Java, C++, JavaScript and other text-based languages
 * Function and class level retrieval
 * Source code citations in responses
-* Persistent vector storage using ChromaDB
+* Persistent vector storage using SQLite + sqlite-vec
 * Multiple project collections
 * Fully offline operation using Ollama
 
@@ -27,7 +27,7 @@ A fully local Retrieval-Augmented Generation (RAG) system for understanding, sea
 | Ollama            | Local LLM hosting         |
 | Llama 3.2         | Answer generation         |
 | mxbai-embed-large | Embedding generation      |
-| ChromaDB          | Vector database           |
+| SQLite + sqlite-vec | Vector database         |
 | Pandas            | File processing utilities |
 
 ---
@@ -45,7 +45,7 @@ code_rag/
 ├── run.sh
 │
 ├── data/
-│   ├── chroma_db/
+│   ├── devone.db
 │   └── projects/
 │
 ├── screenshots/
@@ -107,13 +107,13 @@ streamlit run app.py
 2. Parse functions and classes
 3. Split code into chunks
 4. Generate embeddings
-5. Store vectors in ChromaDB
+5. Store vectors in SQLite + sqlite-vec
 
 ### Query Phase Processing
 
 1. User asks a question
 2. Question converted to embedding
-3. ChromaDB performs similarity search
+3. sqlite-vec performs similarity search
 4. Top-K relevant code chunks retrieved
 5. Llama 3.2 generates answer
 6. Response returned with citations

@@ -30,9 +30,20 @@ from vector import (
 )
 from src.doc_generator import CodeDocGenerator, build_codebase_summary
 
+
+def get_available_models() -> list[str]:
+    """Chat-capable Ollama models actually installed locally (excludes embedding models)."""
+    import ollama
+    try:
+        names = [m.model for m in ollama.list().models]
+    except Exception:
+        return []
+    return sorted(n for n in names if "embed" not in n.lower())
+
+
 # ── Page config ────────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="CodeRAG Assistant",
+    page_title="DevOne",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -40,30 +51,19 @@ st.set_page_config(
 # ── CSS ────────────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-.stApp { background-color: #0d1117; color: #c9d1d9; font-family: 'Segoe UI', sans-serif; }
+.stApp { background-color: #0d1117; color: #c9d1d9; font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; }
 
 [data-testid="stSidebar"] {
-    background: linear-gradient(180deg, #161b22 0%, #0d1117 100%);
+    background: #0d1117;
     border-right: 1px solid #30363d;
 }
 .brand-block {
     text-align: center; padding: 1.2rem 0.5rem 1rem;
     border-bottom: 1px solid #30363d; margin-bottom: 0.8rem;
 }
-.brand-icon  { font-size: 2.4rem; display: block; }
-.brand-title { font-size: 1.5rem; font-weight: 800; color: #58a6ff;
-               letter-spacing: 1px; display: block; }
-.brand-sub   { font-size: 0.7rem; color: #8b949e; letter-spacing: 2px;
-               text-transform: uppercase; display: block; margin-top: 3px; }
-
-.main-header {
-    background: linear-gradient(135deg, #161b22 0%, #0d1117 100%);
-    border: 1px solid #30363d; border-radius: 12px;
-    padding: 1.5rem 2rem; margin-bottom: 1.2rem;
-}
-.main-header h1 { color: #58a6ff; margin: 0 0 0.3rem; font-size: 1.7rem; }
-.main-header p  { color: #8b949e; margin: 0; font-size: 0.9rem; }
-
+.brand-title { font-family: 'Consolas', 'Cascadia Code', monospace;
+               font-size: 1.7rem; font-weight: 700; color: #58a6ff;
+               letter-spacing: 0.5px; display: block; }
 .chunk-card {
     background: #161b22; border: 1px solid #30363d; border-radius: 8px;
     padding: 0.8rem 1rem; margin-bottom: 0.6rem;
@@ -82,10 +82,10 @@ st.markdown("""
     border-radius: 10px; margin-bottom: 0.6rem; padding: 0.8rem 1rem;
 }
 .stButton > button {
-    background: linear-gradient(135deg, #238636, #196127);
-    color: white; border: none; border-radius: 8px; font-weight: 600;
+    background: #238636;
+    color: white; border: none; border-radius: 6px; font-weight: 600;
 }
-.stButton > button:hover { background: linear-gradient(135deg, #2ea043, #238636); }
+.stButton > button:hover { background: #2ea043; }
 .stTabs [data-baseweb="tab"] { color: #8b949e; }
 .stTabs [aria-selected="true"] { color: #58a6ff; border-bottom-color: #58a6ff; }
 </style>
@@ -135,19 +135,18 @@ def load_doc_generator(model_name: str) -> CodeDocGenerator:
 with st.sidebar:
     st.markdown("""
     <div class='brand-block'>
-        <span class='brand-title'>CodeRAG</span>
-        <span class='brand-sub'>AI Code Assistant</span>
+        <span class='brand-title'>DevOne</span>
     </div>
     """, unsafe_allow_html=True)
 
     # ── Model config ───────────────────────────────────────────────────────────
-    st.markdown("### 🤖 Model")
-    new_model = st.selectbox(
-        "LLM (via Ollama)",
-        ["llama3.2", "llama3.1", "llama3", "mistral", "codellama",
-         "deepseek-coder", "gemma2", "phi3", "qwen2.5-coder"],
-        index=0,
-    )
+    st.markdown("### Model")
+    available_models = get_available_models()
+    if not available_models:
+        st.warning("No Ollama models found — run `ollama pull llama3.2` in a terminal.")
+        available_models = ["llama3.2"]
+
+    new_model = st.selectbox("LLM (via Ollama)", available_models)
     if new_model != st.session_state.model:
         st.session_state.model = new_model
         load_llm.clear()
@@ -169,7 +168,7 @@ with st.sidebar:
     st.divider()
 
     # ── Collection ─────────────────────────────────────────────────────────────
-    st.markdown("### 🗄️ Project Collection")
+    st.markdown("### Project Collection")
     existing = list_collections()
     if existing:
         st.caption("Existing: " + ", ".join(f"`{c}`" for c in existing))
@@ -179,7 +178,7 @@ with st.sidebar:
         st.session_state.collection = col_input
         load_retriever.clear()
 
-    if st.button("🗑️ Delete collection", use_container_width=True):
+    if st.button("Delete collection", use_container_width=True):
         delete_collection(st.session_state.collection)
         st.session_state.ingested_files = []
         load_retriever.clear()
@@ -188,7 +187,7 @@ with st.sidebar:
     st.divider()
 
     # ── File upload ────────────────────────────────────────────────────────────
-    st.markdown("### 📁 Upload Source Code")
+    st.markdown("### Upload Source Code")
     st.caption("Supported: `.py` `.java` `.js` `.cpp` `.c`")
 
     uploaded_files = st.file_uploader(
@@ -198,7 +197,7 @@ with st.sidebar:
         key="code_uploader",
     )
 
-    if uploaded_files and st.button("⚙️ Ingest Files", use_container_width=True):
+    if uploaded_files and st.button("Ingest Files", use_container_width=True):
         for f in uploaded_files:
             with st.spinner(f"Parsing & embedding {f.name}…"):
                 source_code = f.read().decode("utf-8", errors="replace")
@@ -211,7 +210,7 @@ with st.sidebar:
             if f.name not in st.session_state.ingested_files:
                 st.session_state.ingested_files.append(f.name)
             st.success(
-                f"✅ **{f.name}** → "
+                f"**{f.name}** ingested — "
                 f"{summary['functions']} functions, "
                 f"{summary['classes']} classes, "
                 f"{summary['total_chunks']} chunks"
@@ -221,19 +220,17 @@ with st.sidebar:
     # Show ingested files
     if st.session_state.ingested_files:
         st.divider()
-        st.markdown("### 📋 Ingested Files")
+        st.markdown("### Ingested Files")
         for fname in st.session_state.ingested_files:
-            ext = fname.rsplit(".", 1)[-1] if "." in fname else ""
-            icons = {"py": "🐍", "java": "☕", "js": "⚡", "cpp": "⚙️", "c": "🔧"}
-            st.caption(f"{icons.get(ext, '📄')} {fname}")
+            st.caption(fname)
 
     st.divider()
 
     # ── Options ────────────────────────────────────────────────────────────────
-    st.markdown("### ⚙️ Options")
+    st.markdown("### Options")
     st.session_state.show_sources = st.toggle("Show retrieved chunks",
                                                value=st.session_state.show_sources)
-    if st.button("🧹 Clear chat", use_container_width=True):
+    if st.button("Clear chat", use_container_width=True):
         st.session_state.messages = []
         st.rerun()
 
@@ -282,22 +279,14 @@ Be clear and educational. Use markdown formatting.
 # MAIN PANEL — TABS
 # ══════════════════════════════════════════════════════════════════════════════
 
-st.markdown("""
-<div class='main-header'>
-    <h1>🧑‍💻 Code Analysis & Documentation Assistant</h1>
-    <p>Upload source code files and ask questions, generate docs,
-    find issues — all locally with no data leaving your machine.</p>
-</div>
-""", unsafe_allow_html=True)
-
 if not list_collections():
-    st.info("👈 Upload source code files from the sidebar to get started.")
+    st.info("Upload source code files from the sidebar to get started.")
 
 tab_chat, tab_docs, tab_issues, tab_readme = st.tabs([
-    "💬 Chat",
-    "📝 Generate Docs",
-    "🔍 Issues & Improvements",
-    "📄 README Generator",
+    "Chat",
+    "Generate Docs",
+    "Issues & Improvements",
+    "README Generator",
 ])
 
 
@@ -313,7 +302,7 @@ with tab_chat:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
             if msg.get("sources") and st.session_state.show_sources:
-                with st.expander("📎 Retrieved Code Chunks"):
+                with st.expander("Retrieved Code Chunks"):
                     st.markdown(msg["sources"])
 
     # Chat input
@@ -324,7 +313,7 @@ with tab_chat:
 
         with st.chat_message("assistant"):
             status = st.empty()
-            status.markdown("_🔍 Searching codebase…_")
+            status.markdown("_Searching codebase…_")
             sources_md = ""
 
             try:
@@ -355,7 +344,7 @@ with tab_chat:
                 ) else CODE_QA_TEMPLATE
 
                 # Build and invoke chain (same pattern as eng_rag)
-                status.markdown("_⚡ Generating answer…_")
+                status.markdown("_Generating answer…_")
                 llm    = load_llm(st.session_state.model)
                 prompt = ChatPromptTemplate.from_template(template)
                 chain  = prompt | llm
@@ -388,12 +377,12 @@ with tab_chat:
                         )
 
                 if sources_md and st.session_state.show_sources:
-                    with st.expander("📎 Retrieved Code Chunks", expanded=False):
+                    with st.expander("Retrieved Code Chunks", expanded=False):
                         st.markdown(sources_md, unsafe_allow_html=True)
 
             except Exception as e:
                 response = (
-                    f"⚠️ **Error:** `{e}`\n\n"
+                    f"**Error:** `{e}`\n\n"
                     "**Checklist:**\n"
                     "- Is Ollama running? (`ollama serve`)\n"
                     f"- Is `{st.session_state.model}` pulled? "
@@ -438,7 +427,7 @@ with tab_docs:
                 horizontal=True,
             )
 
-            if st.button("🧠 Generate Documentation", use_container_width=True):
+            if st.button("Generate Documentation", use_container_width=True):
                 file_docs = [d for d in all_docs if d.metadata.get("source") == selected_file]
                 full_code  = "\n\n".join(d.page_content for d in file_docs)
                 language   = file_docs[0].metadata.get("language", "") if file_docs else ""
@@ -452,7 +441,7 @@ with tab_docs:
                     elif doc_type == "Function Docs":
                         fn_docs = [d for d in file_docs if d.metadata.get("chunk_type") == "function"]
                         if not fn_docs:
-                            result = "⚠️ No functions found in this file."
+                            result = "No functions found in this file."
                         else:
                             parts = []
                             for fd in fn_docs[:8]:  # cap at 8 to avoid timeout
@@ -464,7 +453,7 @@ with tab_docs:
                     elif doc_type == "Class Docs":
                         cls_docs = [d for d in file_docs if d.metadata.get("chunk_type") == "class"]
                         if not cls_docs:
-                            result = "⚠️ No classes found in this file."
+                            result = "No classes found in this file."
                         else:
                             parts = []
                             for cd in cls_docs[:5]:
@@ -484,7 +473,7 @@ with tab_docs:
 
                 # Download button
                 st.download_button(
-                    "⬇️ Download as Markdown",
+                    "Download as Markdown",
                     data=result,
                     file_name=f"{selected_file}_{doc_type.lower().replace(' ','_')}.md",
                     mime="text/markdown",
@@ -492,7 +481,7 @@ with tab_docs:
 
     with col2:
         if files_in_kb:
-            st.markdown("#### 📊 Codebase Stats")
+            st.markdown("#### Codebase Stats")
             funcs   = sum(1 for d in all_docs if d.metadata.get("chunk_type") == "function")
             classes = sum(1 for d in all_docs if d.metadata.get("chunk_type") == "class")
             total   = len(all_docs)
@@ -517,7 +506,7 @@ with tab_issues:
     fname_input = st.text_input("Filename (optional)", value="snippet.py")
     review_type = st.radio("Review type", ["Find Issues", "Suggest Improvements"], horizontal=True)
 
-    if st.button("🔍 Run Code Review", use_container_width=True) and pasted_code.strip():
+    if st.button("Run Code Review", use_container_width=True) and pasted_code.strip():
         gen = load_doc_generator(st.session_state.model)
         with st.spinner("Reviewing code…"):
             if review_type == "Find Issues":
@@ -550,7 +539,7 @@ with tab_readme:
         st.info(f"Will generate README based on **{len(files_list)} file(s)**: "
                 + ", ".join(f"`{f}`" for f in files_list))
 
-        if st.button("📄 Generate README.md", use_container_width=True):
+        if st.button("Generate README.md", use_container_width=True):
             gen = load_doc_generator(st.session_state.model)
             with st.spinner("Analysing codebase and generating README…"):
                 summary   = build_codebase_summary(all_docs_readme)
@@ -560,7 +549,7 @@ with tab_readme:
             st.markdown("---")
             st.markdown(readme)
             st.download_button(
-                "⬇️ Download README.md",
+                "Download README.md",
                 data=readme,
                 file_name="README.md",
                 mime="text/markdown",
