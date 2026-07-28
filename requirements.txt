@@ -4,6 +4,7 @@
 # ── LangChain ─────────────────────────────────────────────────────────────────
 langchain
 langchain-ollama
+langchain-groq
 langchain-community
 langchain-text-splitters
 

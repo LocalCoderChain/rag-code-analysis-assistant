@@ -12,7 +12,9 @@ All generation is RAG-grounded: it reads chunks from the local store
 rather than hallucinating structure.
 """
 
-from langchain_ollama.llms import OllamaLLM
+import os
+
+from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.documents import Document
 
@@ -149,15 +151,14 @@ class CodeDocGenerator:
     Same chain = prompt | model pattern as eng_rag.
     """
 
-    def __init__(self, model_name: str = "llama3.2"):
-        # Same as eng_rag: model = OllamaLLM(model=...)
-        self.model = OllamaLLM(model=model_name, temperature=0.1)
+    def __init__(self, model_name: str = "llama-3.3-70b-versatile"):
+        self.model = ChatGroq(model=model_name, temperature=0.1, api_key=os.getenv("GROQ_API_KEY"))
 
     def _run(self, template: str, **kwargs) -> str:
-        """Generic chain runner. Same: chain = prompt | model → chain.invoke(...)"""
+        """Generic chain runner: chain = prompt | model → chain.invoke(...)"""
         prompt = ChatPromptTemplate.from_template(template)
         chain  = prompt | self.model
-        return chain.invoke(kwargs)
+        return chain.invoke(kwargs).content
 
     def document_function(self, code: str, name: str, filename: str) -> str:
         return self._run(FUNCTION_DOC_TEMPLATE, code=code, name=name, filename=filename)
