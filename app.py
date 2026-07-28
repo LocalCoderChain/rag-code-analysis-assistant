@@ -21,7 +21,7 @@ import os
 
 import streamlit as st
 from dotenv import load_dotenv
-from langchain_ollama.llms import OllamaLLM
+from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 
 from vector import (
@@ -40,13 +40,14 @@ QUICK_TEST_COLLECTION = "quick-test"
 
 
 def get_available_models() -> list[str]:
-    """Chat-capable Ollama models actually installed locally (excludes embedding models)."""
-    import ollama
+    """Chat models actually available to this Groq API key."""
+    from groq import Groq
     try:
-        names = [m.model for m in ollama.list().models]
+        client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+        models = client.models.list()
+        return sorted(m.id for m in models.data if getattr(m, "active", True))
     except Exception:
         return []
-    return sorted(n for n in names if "embed" not in n.lower())
 
 
 # ── Page config ────────────────────────────────────────────────────────────────
@@ -103,7 +104,7 @@ st.markdown("""
 for key, default in {
     "messages":     [],
     "collection":   QUICK_TEST_COLLECTION,
-    "model":        "llama3.2",
+    "model":        "llama-3.3-70b-versatile",
     "embed_model":  "mxbai-embed-large",
     "top_k":        6,
     "show_sources": True,
@@ -118,9 +119,9 @@ for key, default in {
 # ══════════════════════════════════════════════════════════════════════════════
 
 @st.cache_resource
-def load_llm(model_name: str) -> OllamaLLM:
-    """Load LLM once. Same: OllamaLLM(model=...) from eng_rag."""
-    return OllamaLLM(model=model_name, temperature=0.1)
+def load_llm(model_name: str) -> ChatGroq:
+    """Load LLM once, via Groq's API."""
+    return ChatGroq(model=model_name, temperature=0.1, api_key=os.getenv("GROQ_API_KEY"))
 
 
 @st.cache_resource
@@ -151,10 +152,10 @@ with st.sidebar:
     st.markdown("### Model")
     available_models = get_available_models()
     if not available_models:
-        st.warning("No Ollama models found — run `ollama pull llama3.2` in a terminal.")
-        available_models = ["llama3.2"]
+        st.warning("No Groq models found — check `GROQ_API_KEY` in your .env file.")
+        available_models = ["llama-3.3-70b-versatile"]
 
-    new_model = st.selectbox("LLM (via Ollama)", available_models)
+    new_model = st.selectbox("LLM (via Groq)", available_models)
     if new_model != st.session_state.model:
         st.session_state.model = new_model
         load_llm.clear()
@@ -409,7 +410,7 @@ with tab_chat:
                 llm    = load_llm(st.session_state.model)
                 prompt = ChatPromptTemplate.from_template(template)
                 chain  = prompt | llm
-                response = chain.invoke({"context": context, "question": question})
+                response = chain.invoke({"context": context, "question": question}).content
 
                 status.empty()
                 st.markdown(response)
@@ -447,12 +448,12 @@ with tab_chat:
                 response = (
                     f"**Error:** `{e}`\n\n"
                     "**Checklist:**\n"
-                    "- Is Ollama running? (`ollama serve`)\n"
-                    f"- Is `{st.session_state.model}` pulled? "
-                    f"(`ollama pull {st.session_state.model}`)\n"
+                    "- Is `GROQ_API_KEY` set correctly in your `.env`?\n"
+                    f"- Is `{st.session_state.model}` a currently available Groq model?\n"
+                    "- Is Ollama running? (`ollama serve`) — still needed for embeddings\n"
                     f"- Is `{st.session_state.embed_model}` pulled? "
                     f"(`ollama pull {st.session_state.embed_model}`)\n"
-                    "- Have you uploaded and ingested code files from the sidebar?"
+                    "- Have you connected a repo or uploaded code files from the sidebar?"
                 )
                 status.empty()
                 st.markdown(response)
