@@ -12,10 +12,11 @@ stripped back out immediately after cloning.
 
 import os
 import subprocess
+import time
 from urllib.parse import urlparse
 
 from src.parser import get_supported_extensions
-from vector import ingest_code_file, get_connection
+from vector import ingest_code_file, delete_file_chunks, get_connection
 
 BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
 REPOS_DIR = os.path.join(BASE_DIR, "data", "repos")
@@ -62,7 +63,9 @@ def clone_or_pull(url: str, token: str) -> str:
         subprocess.run(["git", "pull", authed_url],
                        cwd=local_path, check=True, capture_output=True, text=True)
     else:
-        subprocess.run(["git", "clone", "--depth", "1", authed_url, local_path],
+        # Full clone (not shallow) — incremental sync needs old commits to
+        # still be reachable locally so `git diff <old_sha> <new_sha>` works.
+        subprocess.run(["git", "clone", authed_url, local_path],
                        check=True, capture_output=True, text=True)
         # Strip the token back out of the stored remote immediately after cloning
         subprocess.run(["git", "remote", "set-url", "origin", _clean_url(owner, repo)],
@@ -91,24 +94,90 @@ def walk_supported_files(local_path: str) -> list[str]:
     return matches
 
 
+def get_repo_record(collection: str) -> dict | None:
+    for r in list_repos():
+        if r["name"] == collection:
+            return r
+    return None
+
+
+def get_changed_files(local_path: str, old_sha: str, new_sha: str) -> tuple[list[str], list[str]]:
+    """
+    Diff two commits and return (files_to_ingest, files_to_delete), both
+    relative paths filtered to supported extensions. Added/modified files
+    (and the new side of a rename) go in files_to_ingest; deleted files
+    (and the old side of a rename) go in files_to_delete.
+    """
+    result = subprocess.run(
+        ["git", "diff", "--name-status", old_sha, new_sha],
+        cwd=local_path, check=True, capture_output=True, text=True,
+    )
+    exts = set(get_supported_extensions())
+
+    def _supported(path: str) -> bool:
+        ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
+        return ext in exts
+
+    to_ingest, to_delete = [], []
+    for line in result.stdout.splitlines():
+        if not line.strip():
+            continue
+        status, *paths = line.split("\t")
+        if status.startswith("A") or status.startswith("M"):
+            if _supported(paths[0]):
+                to_ingest.append(paths[0])
+        elif status.startswith("D"):
+            if _supported(paths[0]):
+                to_delete.append(paths[0])
+        elif status.startswith("R"):
+            old_path, new_path = paths[0], paths[1]
+            if _supported(old_path):
+                to_delete.append(old_path)
+            if _supported(new_path):
+                to_ingest.append(new_path)
+
+    return to_ingest, to_delete
+
+
 def ingest_repo(url: str, token: str, embed_model: str, progress_callback=None) -> dict:
     """
-    Clone/pull a repo, ingest every supported source file, and record it
-    in the repos table. Returns a summary dict.
-
-    Every call currently re-ingests every file (full re-embed) — incremental
-    re-embedding of only changed files is a separate, later improvement.
+    Clone/pull a repo and sync it into storage. First connect ingests every
+    supported file; every later sync uses `git diff` against the last
+    recorded commit to re-embed only files that actually changed, and
+    removes chunks for anything deleted/renamed away. If nothing changed
+    since last sync, skips re-ingestion entirely.
     """
+    start = time.time()
     owner, repo_name = parse_repo_url(url)
     collection = f"{owner}/{repo_name}"
 
+    existing = get_repo_record(collection)
+    old_sha  = existing["last_commit_sha"] if existing else None
+
     local_path = clone_or_pull(url, token)
-    files = walk_supported_files(local_path)
+    new_sha    = get_current_commit_sha(local_path)
+
+    if old_sha == new_sha:
+        return {
+            "collection":     collection,
+            "status":         "up_to_date",
+            "files_ingested": 0,
+            "files_deleted":  0,
+            "total_chunks":   0,
+            "commit_sha":     new_sha,
+            "elapsed_seconds": round(time.time() - start, 1),
+        }
+
+    if old_sha is None:
+        files_to_ingest = walk_supported_files(local_path)
+        files_to_delete = []
+    else:
+        files_to_ingest, files_to_delete = get_changed_files(local_path, old_sha, new_sha)
 
     total_chunks = 0
-    for i, rel_path in enumerate(files):
+    for i, rel_path in enumerate(files_to_ingest):
         if progress_callback:
-            progress_callback(i + 1, len(files), rel_path)
+            progress_callback(i + 1, len(files_to_ingest), rel_path)
         full_path = os.path.join(local_path, rel_path)
         with open(full_path, "r", encoding="utf-8", errors="replace") as f:
             source_code = f.read()
@@ -120,14 +189,19 @@ def ingest_repo(url: str, token: str, embed_model: str, progress_callback=None) 
         )
         total_chunks += summary["total_chunks"]
 
-    sha = get_current_commit_sha(local_path)
-    _record_repo(collection, url, sha)
+    for rel_path in files_to_delete:
+        delete_file_chunks(collection, rel_path)
+
+    _record_repo(collection, url, new_sha)
 
     return {
-        "collection":     collection,
-        "files_ingested": len(files),
-        "total_chunks":   total_chunks,
-        "commit_sha":     sha,
+        "collection":      collection,
+        "status":          "first_ingest" if old_sha is None else "synced",
+        "files_ingested":  len(files_to_ingest),
+        "files_deleted":   len(files_to_delete),
+        "total_chunks":    total_chunks,
+        "commit_sha":      new_sha,
+        "elapsed_seconds": round(time.time() - start, 1),
     }
 
 
