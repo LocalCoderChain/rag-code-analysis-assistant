@@ -169,6 +169,19 @@ def list_collections() -> list[str]:
     return [r[0] for r in rows]
 
 
+def delete_file_chunks(collection: str, filename: str) -> None:
+    """Remove all stored chunks for one file (used when it's deleted/renamed upstream)."""
+    db = get_connection()
+    ids = [r[0] for r in db.execute(
+        "SELECT id FROM chunks WHERE collection = ? AND source = ?", (collection, filename)
+    ).fetchall()]
+    if ids:
+        db.executemany("DELETE FROM chunks_vec WHERE rowid = ?", [(i,) for i in ids])
+        db.execute(f"DELETE FROM chunks WHERE id IN ({','.join('?' * len(ids))})", ids)
+    db.commit()
+    db.close()
+
+
 def delete_collection(collection: str) -> None:
     db = get_connection()
     ids = [r[0] for r in db.execute(

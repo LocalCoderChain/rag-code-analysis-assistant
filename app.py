@@ -198,11 +198,22 @@ with st.sidebar:
                 progress.empty()
                 st.session_state.collection = result["collection"]
                 load_retriever.clear()
-                st.success(
-                    f"**{result['collection']}** connected — "
-                    f"{result['files_ingested']} files, {result['total_chunks']} chunks "
-                    f"(commit `{result['commit_sha'][:7]}`)"
-                )
+
+                if result["status"] == "up_to_date":
+                    st.info(
+                        f"**{result['collection']}** already up to date "
+                        f"(commit `{result['commit_sha'][:7]}`, {result['elapsed_seconds']}s)"
+                    )
+                else:
+                    verb = "connected" if result["status"] == "first_ingest" else "synced"
+                    deleted_note = (f", {result['files_deleted']} removed"
+                                    if result["files_deleted"] else "")
+                    st.success(
+                        f"**{result['collection']}** {verb} — "
+                        f"{result['files_ingested']} files updated{deleted_note}, "
+                        f"{result['total_chunks']} chunks "
+                        f"(commit `{result['commit_sha'][:7]}`, {result['elapsed_seconds']}s)"
+                    )
             except Exception as e:
                 progress.empty()
                 st.error(f"Failed to connect repo: {e}")
