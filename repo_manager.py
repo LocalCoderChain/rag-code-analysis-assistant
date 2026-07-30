@@ -47,6 +47,19 @@ def _local_path(owner: str, repo: str) -> str:
     return os.path.join(REPOS_DIR, f"{owner}_{repo}")
 
 
+def get_local_path_for_collection(collection: str) -> str | None:
+    """
+    Return the local cloned directory for a repo-based collection (name
+    format "owner/repo"), or None if it's not a repo (e.g. quick-test
+    uploads) or hasn't actually been cloned to disk.
+    """
+    if "/" not in collection:
+        return None
+    owner, repo = collection.split("/", 1)
+    path = _local_path(owner, repo)
+    return path if os.path.isdir(path) else None
+
+
 def clone_or_pull(url: str, token: str) -> str:
     """
     Clone the repo on first connect, or pull latest if it already exists

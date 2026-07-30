@@ -22,10 +22,8 @@ import os
 import streamlit as st
 from dotenv import load_dotenv
 from langchain_groq import ChatGroq
-from langchain_core.prompts import ChatPromptTemplate
 
 from vector import (
-    get_retriever,
     ingest_code_file,
     get_all_chunks,
     list_collections,
@@ -33,6 +31,7 @@ from vector import (
 )
 from src.doc_generator import CodeDocGenerator, build_codebase_summary
 from repo_manager import ingest_repo, list_repos, check_remote_status
+from agent_tools import answer_with_tools
 
 load_dotenv()
 
@@ -125,14 +124,6 @@ def load_llm(model_name: str) -> ChatGroq:
 
 
 @st.cache_resource
-def load_retriever(collection: str, embed_model: str, top_k: int):
-    """
-    Cache retriever. Same: vector_store.as_retriever(search_kwargs={"k":k})
-    """
-    return get_retriever(collection=collection, embed_model=embed_model, top_k=top_k)
-
-
-@st.cache_resource
 def load_doc_generator(model_name: str) -> CodeDocGenerator:
     """Cache the documentation generator LLM wrapper."""
     return CodeDocGenerator(model_name=model_name)
@@ -155,7 +146,9 @@ with st.sidebar:
         st.warning("No Groq models found — check `GROQ_API_KEY` in your .env file.")
         available_models = ["llama-3.3-70b-versatile"]
 
-    new_model = st.selectbox("LLM (via Groq)", available_models)
+    model_index = (available_models.index(st.session_state.model)
+                   if st.session_state.model in available_models else 0)
+    new_model = st.selectbox("LLM (via Groq)", available_models, index=model_index)
     if new_model != st.session_state.model:
         st.session_state.model = new_model
         load_llm.clear()
@@ -167,12 +160,10 @@ with st.sidebar:
     )
     if new_embed != st.session_state.embed_model:
         st.session_state.embed_model = new_embed
-        load_retriever.clear()
 
     new_topk = st.slider("Top-K retrieved chunks", 2, 12, st.session_state.top_k)
     if new_topk != st.session_state.top_k:
         st.session_state.top_k = new_topk
-        load_retriever.clear()
 
     st.divider()
 
@@ -197,7 +188,6 @@ with st.sidebar:
                                          progress_callback=_progress)
                 progress.empty()
                 st.session_state.collection = result["collection"]
-                load_retriever.clear()
 
                 if result["status"] == "up_to_date":
                     st.info(
@@ -233,7 +223,6 @@ with st.sidebar:
         selected = st.selectbox("Working on", all_projects, index=current_index)
         if selected != st.session_state.collection:
             st.session_state.collection = selected
-            load_retriever.clear()
 
         if st.session_state.collection in repo_names and st.button(
             "Check for updates", use_container_width=True
@@ -253,7 +242,6 @@ with st.sidebar:
     if st.session_state.collection and st.button("Delete active project", use_container_width=True):
         delete_collection(st.session_state.collection)
         st.session_state.ingested_files = []
-        load_retriever.clear()
         st.success("Deleted.")
 
     st.divider()
@@ -288,7 +276,6 @@ with st.sidebar:
                 f"{summary['total_chunks']} chunks"
             )
         st.session_state.collection = QUICK_TEST_COLLECTION
-        load_retriever.clear()
 
     # Show ingested files
     if st.session_state.ingested_files:
@@ -301,51 +288,11 @@ with st.sidebar:
 
     # ── Options ────────────────────────────────────────────────────────────────
     st.markdown("### Options")
-    st.session_state.show_sources = st.toggle("Show retrieved chunks",
+    st.session_state.show_sources = st.toggle("Show tool activity",
                                                value=st.session_state.show_sources)
     if st.button("Clear chat", use_container_width=True):
         st.session_state.messages = []
         st.rerun()
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# PROMPT TEMPLATES  (engineering-quality prompts for code)
-# ══════════════════════════════════════════════════════════════════════════════
-
-CODE_QA_TEMPLATE = """
-You are a senior software engineer helping a developer understand a codebase.
-
-Use ONLY the retrieved code context below to answer the question.
-If the code context doesn't contain enough information, say so — do not invent code.
-
-Retrieved code context:
-{context}
-
-Developer's question:
-{question}
-
-Provide a clear, precise technical answer.
-Reference specific function names, class names, or line patterns from the context.
-Use markdown code blocks when showing code examples.
-"""
-
-CODE_EXPLAIN_TEMPLATE = """
-You are a senior software engineer explaining code to a developer.
-
-Explain the following code context in detail:
-- What it does (high level)
-- How it works (step by step)
-- Key variables or data structures used
-- Any patterns or design decisions worth noting
-
-Retrieved code context:
-{context}
-
-Question / focus area:
-{question}
-
-Be clear and educational. Use markdown formatting.
-"""
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -375,7 +322,7 @@ with tab_chat:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
             if msg.get("sources") and st.session_state.show_sources:
-                with st.expander("Retrieved Code Chunks"):
+                with st.expander("Tool Activity"):
                     st.markdown(msg["sources"])
 
     # Chat input
@@ -386,86 +333,55 @@ with tab_chat:
 
         with st.chat_message("assistant"):
             status = st.empty()
-            status.markdown("_Searching codebase…_")
+            status.markdown("_Thinking…_")
             sources_md = ""
 
             try:
-                # Retrieve relevant code chunks
-                retriever = load_retriever(
+                llm = load_llm(st.session_state.model)
+                result = answer_with_tools(
+                    question, llm,
                     collection=st.session_state.collection,
                     embed_model=st.session_state.embed_model,
                     top_k=st.session_state.top_k,
                 )
-                docs = retriever.invoke(question)
-
-                # Build context with code metadata
-                context_parts = []
-                for doc in docs:
-                    meta   = doc.metadata
-                    header = (f"[File: {meta.get('source','?')} | "
-                              f"Type: {meta.get('chunk_type','?')} | "
-                              f"Name: {meta.get('name','?')}]")
-                    context_parts.append(f"{header}\n```{meta.get('language','')}\n"
-                                         f"{doc.page_content}\n```")
-                context = "\n\n---\n\n".join(context_parts)
-
-                # Choose template based on question type
-                explain_keywords = ["explain", "what does", "how does", "describe",
-                                    "summarize", "summarise", "what is"]
-                template = CODE_EXPLAIN_TEMPLATE if any(
-                    k in question.lower() for k in explain_keywords
-                ) else CODE_QA_TEMPLATE
-
-                # Build and invoke chain (same pattern as eng_rag)
-                status.markdown("_Generating answer…_")
-                llm    = load_llm(st.session_state.model)
-                prompt = ChatPromptTemplate.from_template(template)
-                chain  = prompt | llm
-                response = chain.invoke({"context": context, "question": question}).content
+                response = result["answer"]
 
                 status.empty()
                 st.markdown(response)
 
-                # Format source citations
-                if docs:
-                    sources_md = "**Retrieved code chunks:**\n\n"
-                    for doc in docs:
-                        meta  = doc.metadata
-                        ctype = meta.get("chunk_type", "code")
-                        name  = meta.get("name", "")
-                        src   = meta.get("source", "?")
-                        lang  = meta.get("language", "")
-                        tag_class = {
-                            "function": "tag-function",
-                            "class":    "tag-class",
-                            "imports":  "tag-imports",
-                        }.get(ctype, "tag-code")
-                        label = f"{ctype}: {name}" if name else ctype
-                        if meta.get("sub_chunk") is not None:
-                            label += f" (part {meta['sub_chunk'] + 1})"
+                if result["tool_calls"]:
+                    sources_md = "**Tools used:**\n\n"
+                    for call in result["tool_calls"]:
                         sources_md += (
                             f"<div class='chunk-card'>"
-                            f"<span class='chunk-tag {tag_class}'>{label}</span> "
-                            f"<code>{src}</code><br>"
-                            f"<small>{doc.page_content[:150].strip()}…</small>"
+                            f"<span class='chunk-tag tag-code'>{call['name']}</span><br>"
+                            f"<small>{call['output'][:200].strip()}…</small>"
                             f"</div>\n"
                         )
 
                 if sources_md and st.session_state.show_sources:
-                    with st.expander("Retrieved Code Chunks", expanded=False):
+                    with st.expander("Tool Activity", expanded=False):
                         st.markdown(sources_md, unsafe_allow_html=True)
 
             except Exception as e:
-                response = (
-                    f"**Error:** `{e}`\n\n"
-                    "**Checklist:**\n"
-                    "- Is `GROQ_API_KEY` set correctly in your `.env`?\n"
-                    f"- Is `{st.session_state.model}` a currently available Groq model?\n"
-                    "- Is Ollama running? (`ollama serve`) — still needed for embeddings\n"
-                    f"- Is `{st.session_state.embed_model}` pulled? "
-                    f"(`ollama pull {st.session_state.embed_model}`)\n"
-                    "- Have you connected a repo or uploaded code files from the sidebar?"
-                )
+                if "tool calling is not supported" in str(e).lower():
+                    response = (
+                        f"**Error:** `{st.session_state.model}` doesn't support tool calling, "
+                        "which this agentic chat mode requires.\n\n"
+                        "Switch to **llama-3.3-70b-versatile** (or another tool-calling-capable "
+                        "model) in the sidebar and try again."
+                    )
+                else:
+                    response = (
+                        f"**Error:** `{e}`\n\n"
+                        "**Checklist:**\n"
+                        "- Is `GROQ_API_KEY` set correctly in your `.env`?\n"
+                        f"- Is `{st.session_state.model}` a currently available Groq model?\n"
+                        "- Is Ollama running? (`ollama serve`) — still needed for embeddings\n"
+                        f"- Is `{st.session_state.embed_model}` pulled? "
+                        f"(`ollama pull {st.session_state.embed_model}`)\n"
+                        "- Have you connected a repo or uploaded code files from the sidebar?"
+                    )
                 status.empty()
                 st.markdown(response)
                 sources_md = ""
