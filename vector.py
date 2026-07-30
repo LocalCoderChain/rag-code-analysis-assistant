@@ -93,26 +93,6 @@ def _init_schema(db: sqlite3.Connection) -> None:
     db.commit()
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# RETRIEVER  (kept invoke()-shaped so app.py doesn't need to change yet)
-# ══════════════════════════════════════════════════════════════════════════════
-
-class _SqliteRetriever:
-    def __init__(self, collection: str, embed_model: str, top_k: int):
-        self.collection  = collection
-        self.embed_model = embed_model
-        self.top_k       = top_k
-
-    def invoke(self, query: str) -> list[Document]:
-        return search(query, self.collection, self.embed_model, self.top_k)
-
-
-def get_retriever(collection: str = "code_kb",
-                  embed_model: str = EMBED_MODEL,
-                  top_k: int = 6) -> _SqliteRetriever:
-    return _SqliteRetriever(collection, embed_model, top_k)
-
-
 def search(query: str,
           collection: str = "code_kb",
           embed_model: str = EMBED_MODEL,
