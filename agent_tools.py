@@ -18,11 +18,12 @@ final answer) is a well-trodden, already-solved pattern.
 
 import os
 import re
+import time
 
 from langchain_core.tools import tool
 from langgraph.prebuilt import create_react_agent
 
-from vector import search as vector_search_impl
+from vector import search as vector_search_impl, log_usage
 from repo_manager import get_local_path_for_collection
 
 SKIP_DIRS = {".git", "node_modules", "__pycache__", "venv", "myvenv", ".venv", "dist", "build"}
@@ -30,11 +31,15 @@ SKIP_DIRS = {".git", "node_modules", "__pycache__", "venv", "myvenv", ".venv", "
 SYSTEM_PROMPT = """You are a senior software engineer helping a developer understand their codebase.
 
 You have three tools available:
-- vector_search: semantic search over embedded code chunks — best for broad or conceptual questions.
-- grep: exact text search across the project's files — best for finding where something specific is defined or used by name.
-- read_file: read a file's full content — best when you need to see an entire file, not just a chunk (e.g. "what does X file do").
+- vector_search_tool: semantic search over embedded code chunks — best for broad or conceptual questions.
+- grep_tool: exact text search across the project's files — best for finding where something specific is defined or used by name.
+- read_file_tool: read a file's full content — best when you need to see an entire file, not just a chunk (e.g. "what does X file do").
 
-Use whichever tool(s) fit the question, and call more than one if the first doesn't give you enough to answer well. Reference specific files, functions, and line patterns in your answer. If the tools don't turn up enough information, say so clearly rather than guessing."""
+Use whichever tool(s) fit the question, and call more than one if the first doesn't give you enough to answer well. Reference specific files, functions, and line patterns in your answer. If the tools don't turn up enough information, say so clearly rather than guessing.
+
+Every tool call resends the full conversation so far, so unnecessary calls are expensive. Prefer the minimum number of tool calls needed to answer confidently — don't call vector_search_tool and read_file_tool for the same information if one already gave you enough, and don't re-fetch something you've already seen earlier in this same conversation.
+
+If your tool results are weak, conflicting, or point to more than one plausible answer (e.g. the same term meaning different things in different files), don't guess which one the user meant. Instead, briefly say what you found in each place and ask the user to clarify which one they're asking about, rather than presenting a guess as the answer."""
 
 
 def grep(pattern: str, collection: str, max_matches: int = 30) -> str:
@@ -94,7 +99,7 @@ def _build_tools(collection: str, embed_model: str, top_k: int) -> list:
     """
 
     @tool
-    def vector_search(query: str) -> str:
+    def vector_search_tool(query: str) -> str:
         """Semantic search over embedded code chunks in the current project.
         Use for broad or conceptual questions like "how does X work" or
         "explain the retrieval flow" — finds chunks similar in meaning to
@@ -124,19 +129,58 @@ def _build_tools(collection: str, embed_model: str, top_k: int) -> list:
         chunk — e.g. "what does app.py do"."""
         return read_file(path, collection)
 
-    return [vector_search, grep_tool, read_file_tool]
+    return [vector_search_tool, grep_tool, read_file_tool]
 
 
-def answer_with_tools(question: str, llm, collection: str, embed_model: str, top_k: int = 6) -> dict:
+def _sum_tokens(messages) -> tuple[int, int, int]:
+    """Sum usage_metadata across every AIMessage in an agent run — a ReAct
+    loop can call the LLM multiple times per question, so a single
+    message's usage isn't the whole picture."""
+    input_tokens = output_tokens = total_tokens = 0
+    for m in messages:
+        usage = getattr(m, "usage_metadata", None)
+        if usage:
+            input_tokens  += usage.get("input_tokens", 0) or 0
+            output_tokens += usage.get("output_tokens", 0) or 0
+            total_tokens  += usage.get("total_tokens", 0) or 0
+    return input_tokens, output_tokens, total_tokens
+
+
+def answer_with_tools(question: str, llm, model_name: str, collection: str,
+                      embed_model: str, top_k: int = 6, history: list = None) -> dict:
     """
     Runs the agentic loop: the model can call vector_search/grep/read_file
-    as needed before producing a final answer. Returns the answer plus
-    which tools were actually used (name + output preview) for UI display.
+    as needed before producing a final answer. Returns the answer, which
+    tools were actually used (name + output preview), and token usage —
+    logged to usage_log as a side effect.
+
+    `history` is a list of (role, content) tuples from prior turns — just
+    the user questions and final answers, not each turn's internal tool
+    calls. Keeping it to that lightweight form avoids every new question
+    re-paying for all past turns' tool-calling scaffolding too.
     """
     tools = _build_tools(collection, embed_model, top_k)
     agent = create_react_agent(llm, tools, prompt=SYSTEM_PROMPT)
 
-    result   = agent.invoke({"messages": [("user", question)]})
+    input_messages = (history or []) + [("user", question)]
+
+    # Occasionally the model emits malformed tool-call syntax the API can't
+    # parse (a known flakiness with function-calling LLMs, not a logic bug) —
+    # retry a couple of times before giving up, since generation isn't fully
+    # deterministic and a second attempt often just succeeds.
+    result = None
+    last_error = None
+    for attempt in range(3):
+        try:
+            result = agent.invoke({"messages": input_messages})
+            break
+        except Exception as e:
+            last_error = e
+            if attempt < 2:
+                time.sleep(1)
+    if result is None:
+        raise last_error
+
     messages = result["messages"]
 
     answer = messages[-1].content
@@ -146,4 +190,12 @@ def answer_with_tools(question: str, llm, collection: str, embed_model: str, top
         if type(m).__name__ == "ToolMessage"
     ]
 
-    return {"answer": answer, "tool_calls": tool_calls}
+    input_tokens, output_tokens, total_tokens = _sum_tokens(messages)
+    log_usage(collection, question, "chat", model_name,
+              input_tokens, output_tokens, total_tokens)
+
+    return {
+        "answer": answer,
+        "tool_calls": tool_calls,
+        "tokens": {"input": input_tokens, "output": output_tokens, "total": total_tokens},
+    }

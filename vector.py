@@ -82,6 +82,19 @@ def _init_schema(db: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_chunks_collection_source
         ON chunks(collection, source)
     """)
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS usage_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT DEFAULT (datetime('now')),
+            collection TEXT,
+            query TEXT,
+            source TEXT,
+            model TEXT,
+            input_tokens INTEGER,
+            output_tokens INTEGER,
+            total_tokens INTEGER
+        )
+    """)
 
     exists = db.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='chunks_vec'"
@@ -282,3 +295,61 @@ def get_all_chunks(collection: str,
         )
         for text, source, chunk_type, name, language, line_start, sub_chunk in rows
     ]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# USAGE TRACKING
+# ══════════════════════════════════════════════════════════════════════════════
+
+def log_usage(collection: str, query: str, source: str, model: str,
+              input_tokens: int, output_tokens: int, total_tokens: int) -> None:
+    """Record one LLM call's token usage. source is e.g. 'chat' or 'doc_generation'."""
+    db = get_connection()
+    db.execute(
+        "INSERT INTO usage_log (collection, query, source, model, "
+        "input_tokens, output_tokens, total_tokens) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (collection, query, source, model, input_tokens or 0, output_tokens or 0, total_tokens or 0),
+    )
+    db.commit()
+    db.close()
+
+
+def get_usage_stats(collection: str = None) -> dict:
+    """
+    Aggregate token usage, optionally filtered to one project. Real counts
+    only — no dollar-cost estimate, since current per-model Groq pricing
+    isn't something to guess at reliably.
+    """
+    db = get_connection()
+    if collection:
+        rows = db.execute(
+            "SELECT model, source, input_tokens, output_tokens, total_tokens, timestamp "
+            "FROM usage_log WHERE collection = ? ORDER BY timestamp DESC",
+            (collection,),
+        ).fetchall()
+    else:
+        rows = db.execute(
+            "SELECT model, source, input_tokens, output_tokens, total_tokens, timestamp "
+            "FROM usage_log ORDER BY timestamp DESC"
+        ).fetchall()
+    db.close()
+
+    by_model = {}
+    for model, source, inp, out, tot, ts in rows:
+        entry = by_model.setdefault(model, {"input": 0, "output": 0, "total": 0, "queries": 0})
+        entry["input"]   += inp
+        entry["output"]  += out
+        entry["total"]   += tot
+        entry["queries"] += 1
+
+    return {
+        "total_queries":       len(rows),
+        "total_input_tokens":  sum(r[2] for r in rows),
+        "total_output_tokens": sum(r[3] for r in rows),
+        "total_tokens":        sum(r[4] for r in rows),
+        "by_model":            by_model,
+        "recent": [
+            {"model": m, "source": s, "total_tokens": t, "timestamp": ts}
+            for m, s, _, _, t, ts in rows[:20]
+        ],
+    }
