@@ -30,7 +30,7 @@ from vector import (
     delete_collection,
     get_usage_stats,
 )
-from src.doc_generator import CodeDocGenerator, build_codebase_summary
+from src.doc_generator import CodeDocGenerator, build_codebase_summary, generate_project_overview
 from repo_manager import ingest_repo, list_repos, check_remote_status
 from agent_tools import answer_with_tools
 
@@ -431,6 +431,28 @@ with tab_docs:
             collection=st.session_state.collection,
             embed_model=st.session_state.embed_model,
         )
+
+        # Project overview (map-reduce across every file — summarize each
+        # one, then summarize those summaries, since a whole repo's raw
+        # source won't fit in one context window)
+        if all_docs:
+            st.markdown("##### Project Overview")
+            if st.button("Summarize this project", use_container_width=True):
+                gen = load_doc_generator(st.session_state.model)
+                overview_progress = st.empty()
+
+                def _overview_progress(done, total, fname):
+                    overview_progress.markdown(f"_Summarizing {done}/{total}: {fname}…_")
+
+                with st.spinner("Analyzing project…"):
+                    overview = generate_project_overview(
+                        all_docs, gen, st.session_state.collection,
+                        collection=st.session_state.collection,
+                        progress_callback=_overview_progress,
+                    )
+                overview_progress.empty()
+                st.markdown(overview)
+            st.divider()
 
         # File selector
         files_in_kb = list(set(d.metadata.get("source", "") for d in all_docs if d.metadata.get("source")))
