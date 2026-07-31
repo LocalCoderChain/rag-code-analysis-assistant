@@ -142,6 +142,23 @@ Code:
 Provide actionable, specific suggestions. Use markdown formatting.
 """
 
+REPO_OVERVIEW_TEMPLATE = """
+You are a senior software engineer writing a project overview for a new developer joining the team.
+
+You've been given individual summaries of each file in this project (not the raw code, since a whole repo doesn't fit in one context window). Based on these, write a cohesive overview that explains:
+1. What this project actually does, in plain language (2-3 sentences)
+2. The overall architecture — how the pieces fit together
+3. The main technologies/frameworks used
+4. Anything notable about how it's designed
+
+Project: {project_name}
+
+Per-file summaries:
+{file_summaries}
+
+Write a clear, well-organized overview. Use markdown formatting. Synthesize what the project as a whole is for and how it works — don't just restate the file list.
+"""
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # GENERATOR CLASS
@@ -191,6 +208,10 @@ class CodeDocGenerator:
     def suggest_improvements(self, code: str, filename: str, collection: str = None) -> str:
         return self._run(IMPROVEMENT_TEMPLATE, collection=collection, code=code[:4000], filename=filename)
 
+    def summarize_repo(self, file_summaries: str, project_name: str, collection: str = None) -> str:
+        return self._run(REPO_OVERVIEW_TEMPLATE, collection=collection,
+                         file_summaries=file_summaries, project_name=project_name)
+
 
 def build_codebase_summary(docs: list[Document]) -> str:
     """
@@ -227,3 +248,38 @@ def build_codebase_summary(docs: list[Document]) -> str:
         lines.extend(classes[:20])
 
     return "\n".join(lines)
+
+
+def generate_project_overview(all_docs: list[Document], generator: CodeDocGenerator,
+                              project_name: str, collection: str = None,
+                              max_files: int = 20, progress_callback=None) -> str:
+    """
+    Map-reduce summarization for "what is this project?" questions: a whole
+    repo's raw source won't fit in one context window, but a short summary
+    per file will. Map: summarize each file individually. Reduce: summarize
+    those summaries into one cohesive overview.
+    """
+    files = {}
+    for doc in all_docs:
+        src = doc.metadata.get("source", "unknown")
+        files.setdefault(src, []).append(doc)
+
+    filenames  = list(files.keys())[:max_files]
+    truncated  = len(files) > max_files
+
+    file_summaries = []
+    for i, filename in enumerate(filenames):
+        if progress_callback:
+            progress_callback(i + 1, len(filenames), filename)
+        docs     = files[filename]
+        code     = "\n\n".join(d.page_content for d in docs)
+        language = docs[0].metadata.get("language", "")
+        summary  = generator.summarize_file(code, filename, language, collection=collection)
+        file_summaries.append(f"### {filename}\n{summary}")
+
+    overview = generator.summarize_repo("\n\n".join(file_summaries), project_name, collection=collection)
+
+    if truncated:
+        overview += f"\n\n*(Overview based on the first {max_files} of {len(files)} files.)*"
+
+    return overview
