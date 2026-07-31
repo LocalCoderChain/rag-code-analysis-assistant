@@ -18,6 +18,8 @@ from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.documents import Document
 
+from vector import log_usage
+
 
 # ── Prompt templates ───────────────────────────────────────────────────────────
 
@@ -152,33 +154,42 @@ class CodeDocGenerator:
     """
 
     def __init__(self, model_name: str = "llama-3.3-70b-versatile"):
-        self.model = ChatGroq(model=model_name, temperature=0.1, api_key=os.getenv("GROQ_API_KEY"))
+        self.model_name = model_name
+        self.model = ChatGroq(model=model_name, temperature=0.1, max_tokens=2048, api_key=os.getenv("GROQ_API_KEY"))
 
-    def _run(self, template: str, **kwargs) -> str:
+    def _run(self, template: str, collection: str = None, **kwargs) -> str:
         """Generic chain runner: chain = prompt | model → chain.invoke(...)"""
-        prompt = ChatPromptTemplate.from_template(template)
-        chain  = prompt | self.model
-        return chain.invoke(kwargs).content
+        prompt   = ChatPromptTemplate.from_template(template)
+        chain    = prompt | self.model
+        response = chain.invoke(kwargs)
 
-    def document_function(self, code: str, name: str, filename: str) -> str:
-        return self._run(FUNCTION_DOC_TEMPLATE, code=code, name=name, filename=filename)
+        usage = getattr(response, "usage_metadata", None) or {}
+        log_usage(
+            collection, kwargs.get("filename") or kwargs.get("name") or "", "doc_generation",
+            self.model_name, usage.get("input_tokens", 0), usage.get("output_tokens", 0),
+            usage.get("total_tokens", 0),
+        )
+        return response.content
 
-    def document_class(self, code: str, name: str, filename: str) -> str:
-        return self._run(CLASS_DOC_TEMPLATE, code=code, name=name, filename=filename)
+    def document_function(self, code: str, name: str, filename: str, collection: str = None) -> str:
+        return self._run(FUNCTION_DOC_TEMPLATE, collection=collection, code=code, name=name, filename=filename)
 
-    def summarize_file(self, code: str, filename: str, language: str) -> str:
-        return self._run(FILE_SUMMARY_TEMPLATE,
+    def document_class(self, code: str, name: str, filename: str, collection: str = None) -> str:
+        return self._run(CLASS_DOC_TEMPLATE, collection=collection, code=code, name=name, filename=filename)
+
+    def summarize_file(self, code: str, filename: str, language: str, collection: str = None) -> str:
+        return self._run(FILE_SUMMARY_TEMPLATE, collection=collection,
                          code=code[:4000], filename=filename, language=language)
 
-    def generate_readme(self, codebase_summary: str, file_list: str) -> str:
-        return self._run(README_TEMPLATE,
+    def generate_readme(self, codebase_summary: str, file_list: str, collection: str = None) -> str:
+        return self._run(README_TEMPLATE, collection=collection,
                          codebase_summary=codebase_summary, file_list=file_list)
 
-    def find_issues(self, code: str, filename: str) -> str:
-        return self._run(ISSUE_FINDER_TEMPLATE, code=code[:4000], filename=filename)
+    def find_issues(self, code: str, filename: str, collection: str = None) -> str:
+        return self._run(ISSUE_FINDER_TEMPLATE, collection=collection, code=code[:4000], filename=filename)
 
-    def suggest_improvements(self, code: str, filename: str) -> str:
-        return self._run(IMPROVEMENT_TEMPLATE, code=code[:4000], filename=filename)
+    def suggest_improvements(self, code: str, filename: str, collection: str = None) -> str:
+        return self._run(IMPROVEMENT_TEMPLATE, collection=collection, code=code[:4000], filename=filename)
 
 
 def build_codebase_summary(docs: list[Document]) -> str:

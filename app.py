@@ -28,6 +28,7 @@ from vector import (
     get_all_chunks,
     list_collections,
     delete_collection,
+    get_usage_stats,
 )
 from src.doc_generator import CodeDocGenerator, build_codebase_summary
 from repo_manager import ingest_repo, list_repos, check_remote_status
@@ -36,6 +37,7 @@ from agent_tools import answer_with_tools
 load_dotenv()
 
 QUICK_TEST_COLLECTION = "quick-test"
+LONG_SESSION_TOKEN_WARNING = 50_000
 
 
 def get_available_models() -> list[str]:
@@ -108,6 +110,7 @@ for key, default in {
     "top_k":        6,
     "show_sources": True,
     "ingested_files": [],
+    "session_tokens": 0,
 }.items():
     if key not in st.session_state:
         st.session_state[key] = default
@@ -120,7 +123,7 @@ for key, default in {
 @st.cache_resource
 def load_llm(model_name: str) -> ChatGroq:
     """Load LLM once, via Groq's API."""
-    return ChatGroq(model=model_name, temperature=0.1, api_key=os.getenv("GROQ_API_KEY"))
+    return ChatGroq(model=model_name, temperature=0.1, max_tokens=2048, api_key=os.getenv("GROQ_API_KEY"))
 
 
 @st.cache_resource
@@ -292,6 +295,7 @@ with st.sidebar:
                                                value=st.session_state.show_sources)
     if st.button("Clear chat", use_container_width=True):
         st.session_state.messages = []
+        st.session_state.session_tokens = 0
         st.rerun()
 
 
@@ -302,11 +306,12 @@ with st.sidebar:
 if not list_collections():
     st.info("Upload source code files from the sidebar to get started.")
 
-tab_chat, tab_docs, tab_issues, tab_readme = st.tabs([
+tab_chat, tab_docs, tab_issues, tab_readme, tab_usage = st.tabs([
     "Chat",
     "Generate Docs",
     "Issues & Improvements",
     "README Generator",
+    "Usage Stats",
 ])
 
 
@@ -316,6 +321,13 @@ tab_chat, tab_docs, tab_issues, tab_readme = st.tabs([
 with tab_chat:
     st.markdown("#### Ask anything about your codebase")
     st.caption("Examples: *Explain the main function* · *What does the Parser class do?* · *How is data stored?*")
+
+    if st.session_state.session_tokens > LONG_SESSION_TOKEN_WARNING:
+        st.info(
+            f"This conversation has used ~{st.session_state.session_tokens:,} tokens so far — "
+            "each new question resends the full history. Consider **Clear chat** in the "
+            "sidebar to keep responses faster and cheaper."
+        )
 
     # Replay history
     for msg in st.session_state.messages:
@@ -338,13 +350,21 @@ with tab_chat:
 
             try:
                 llm = load_llm(st.session_state.model)
+                # Prior turns only — question + final answer, not each turn's
+                # tool-calling scaffolding (keeps re-sent history lightweight).
+                history = [
+                    (m["role"], m["content"])
+                    for m in st.session_state.messages[:-1]
+                ]
                 result = answer_with_tools(
-                    question, llm,
+                    question, llm, st.session_state.model,
                     collection=st.session_state.collection,
                     embed_model=st.session_state.embed_model,
                     top_k=st.session_state.top_k,
+                    history=history,
                 )
                 response = result["answer"]
+                st.session_state.session_tokens += result["tokens"]["total"]
 
                 status.empty()
                 st.markdown(response)
@@ -370,6 +390,12 @@ with tab_chat:
                         "which this agentic chat mode requires.\n\n"
                         "Switch to **llama-3.3-70b-versatile** (or another tool-calling-capable "
                         "model) in the sidebar and try again."
+                    )
+                elif "tool_use_failed" in str(e).lower():
+                    response = (
+                        "**The model had trouble forming a tool call for that question.** "
+                        "This is an occasional model reliability quirk, not a bug in the app.\n\n"
+                        "Try rephrasing with a shorter, more specific search term, or just ask again."
                     )
                 else:
                     response = (
@@ -425,9 +451,11 @@ with tab_docs:
 
                 gen = load_doc_generator(st.session_state.model)
 
+                proj = st.session_state.collection
+
                 with st.spinner("Generating…"):
                     if doc_type == "File Summary":
-                        result = gen.summarize_file(full_code, selected_file, language)
+                        result = gen.summarize_file(full_code, selected_file, language, collection=proj)
 
                     elif doc_type == "Function Docs":
                         fn_docs = [d for d in file_docs if d.metadata.get("chunk_type") == "function"]
@@ -438,7 +466,7 @@ with tab_docs:
                             for fd in fn_docs[:8]:  # cap at 8 to avoid timeout
                                 name   = fd.metadata.get("name", "unknown")
                                 parts.append(f"### `{name}()`\n\n"
-                                             + gen.document_function(fd.page_content, name, selected_file))
+                                             + gen.document_function(fd.page_content, name, selected_file, collection=proj))
                             result = "\n\n---\n\n".join(parts)
 
                     elif doc_type == "Class Docs":
@@ -450,14 +478,14 @@ with tab_docs:
                             for cd in cls_docs[:5]:
                                 name   = cd.metadata.get("name", "unknown")
                                 parts.append(f"### Class `{name}`\n\n"
-                                             + gen.document_class(cd.page_content, name, selected_file))
+                                             + gen.document_class(cd.page_content, name, selected_file, collection=proj))
                             result = "\n\n---\n\n".join(parts)
 
                     elif doc_type == "Find Issues":
-                        result = gen.find_issues(full_code, selected_file)
+                        result = gen.find_issues(full_code, selected_file, collection=proj)
 
                     else:  # Suggest Improvements
-                        result = gen.suggest_improvements(full_code, selected_file)
+                        result = gen.suggest_improvements(full_code, selected_file, collection=proj)
 
                 st.markdown("---")
                 st.markdown(result)
@@ -501,9 +529,9 @@ with tab_issues:
         gen = load_doc_generator(st.session_state.model)
         with st.spinner("Reviewing code…"):
             if review_type == "Find Issues":
-                result = gen.find_issues(pasted_code, fname_input)
+                result = gen.find_issues(pasted_code, fname_input, collection="pasted-snippet")
             else:
-                result = gen.suggest_improvements(pasted_code, fname_input)
+                result = gen.suggest_improvements(pasted_code, fname_input, collection="pasted-snippet")
         st.markdown("---")
         st.markdown(result)
 
@@ -535,7 +563,7 @@ with tab_readme:
             with st.spinner("Analysing codebase and generating README…"):
                 summary   = build_codebase_summary(all_docs_readme)
                 file_list = "\n".join(f"- {f}" for f in files_list)
-                readme    = gen.generate_readme(summary, file_list)
+                readme    = gen.generate_readme(summary, file_list, collection=st.session_state.collection)
 
             st.markdown("---")
             st.markdown(readme)
@@ -544,4 +572,43 @@ with tab_readme:
                 data=readme,
                 file_name="README.md",
                 mime="text/markdown",
+            )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 5: USAGE STATS
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_usage:
+    st.markdown("#### Token Usage")
+    st.caption("Real token counts per call — no dollar-cost estimate, since current "
+               "per-model API pricing isn't something to guess at reliably.")
+
+    scope = st.radio("Scope", ["All projects", "Active project only"], horizontal=True)
+    stats = get_usage_stats(st.session_state.collection if scope == "Active project only" else None)
+
+    if stats["total_queries"] == 0:
+        st.info("No usage logged yet — ask something in Chat or generate some docs first.")
+    else:
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Queries", stats["total_queries"])
+        col2.metric("Input Tokens", f"{stats['total_input_tokens']:,}")
+        col3.metric("Output Tokens", f"{stats['total_output_tokens']:,}")
+        col4.metric("Total Tokens", f"{stats['total_tokens']:,}")
+
+        st.markdown("##### By Model")
+        for model, data in stats["by_model"].items():
+            st.markdown(
+                f"<div class='chunk-card'>"
+                f"<span class='chunk-tag tag-code'>{model}</span> "
+                f"{data['queries']} calls — {data['input']:,} in / {data['output']:,} out / "
+                f"{data['total']:,} total tokens"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+
+        st.markdown("##### Recent Activity")
+        for entry in stats["recent"]:
+            st.caption(
+                f"{entry['timestamp']} · {entry['source']} · {entry['model']} · "
+                f"{entry['total_tokens']:,} tokens"
             )
