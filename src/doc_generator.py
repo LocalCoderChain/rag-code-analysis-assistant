@@ -92,7 +92,6 @@ Based on the following codebase summary, generate a professional README.md that 
 6. Project structure explanation
 7. Key functions/classes overview
 8. Contributing guidelines (brief)
-9. License placeholder
 
 Codebase summary:
 {codebase_summary}
