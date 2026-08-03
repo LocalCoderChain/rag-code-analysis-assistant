@@ -132,7 +132,7 @@ A few choices worth calling out, since they were deliberate rather than defaults
 
 ## Screenshots
 
-See the `screenshots/` folder for UI screenshots, and the project demo video for a full walkthrough.
+Please check the `screenshots/` folder for UI screenshots.
 
 ---
 
